@@ -195,7 +195,7 @@ def analyze_large_text_batched(text, topics, token_limit=3000):
         logger.info("Only one analysis result found. Skipping unification.")
         return all_analyses[0]
     else:
-        return {"message": "No relevant information found."}
+        return {"message": "No relevant information found."}["message"]  # Access the value of the "message" key
 
 
 @app.websocket("/ws")
