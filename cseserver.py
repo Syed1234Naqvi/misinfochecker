@@ -215,6 +215,8 @@ async def websocket_endpoint(websocket: WebSocket):
             elif message.get('action') == 'analyze_text' and 'text' in message:
                 logger.info("Received text for analysis")
 
+                requestInfo = message.get('requestInfo')  # Get requestInfo // This line was modified or newly added
+
                 # Call Celery task asynchronously
                 task = analyze_text_async.delay(message['text'], HARDCODED_TOPICS)
 
@@ -222,7 +224,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 result = task.get(timeout=600)  # Blocks until result is available
 
                 # Send the result back through WebSocket
-                response = json.dumps({'result': result})
+                response = json.dumps({'result': result, 'requestInfo': requestInfo})  # Include requestInfo in the response // This line was modified or newly added
                 await websocket.send_text(response)
                 logger.info(f"Sent analysis result: {response}")
             else:

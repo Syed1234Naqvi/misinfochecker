@@ -16,7 +16,7 @@ function connectWebSocket() {
             console.log('Received analysis result.');
 
             // Find the correct tab ID based on the request map
-            const [tabId] = [...requestMap.entries()].find(([, isActive]) => isActive) || [];
+            const tabId = requestMap.get(data.requestInfo); // Retrieve tab ID using requestInfo // This line was modified or newly added 
             if (tabId) {
                 console.log(`Sending result to tab ID: ${tabId}.`);
                 chrome.tabs.sendMessage(tabId, { result: data.result }, (response) => {
@@ -25,7 +25,7 @@ function connectWebSocket() {
 					}
 				});
 				// Remove the tab from the request map after sending the result
-				requestMap.delete(tabId);
+                requestMap.delete(data.requestInfo); // This line was modified or newly added
 		} else {
 			console.warn('No matching tab found to send the result.');
 		}								   
@@ -45,9 +45,10 @@ function connectWebSocket() {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === 'analyzePage') {
-        requestMap.set(sender.tab.id, true);  // Track the tab making the request
+        const requestInfo = new Date().getTime().toString(); // Example using timestamp // This line was modified or newly added
+        requestMap.set(requestInfo, sender.tab.id);  // Track the tab making the request // This line was modified or newly added
         console.log(`Stored request for tab ID: ${sender.tab.id}`);
-        webSocket.send(JSON.stringify({ action: 'analyze_text', text: message.text }));
+	    webSocket.send(JSON.stringify({ action: 'analyze_text', text: message.text, requestInfo: requestInfo })); // This line was modified or newly added
         console.log('Text sent through WebSocket.');
     }
 	return true;
