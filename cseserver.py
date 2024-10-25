@@ -9,6 +9,11 @@ from nltk.corpus import wordnet as wn
 import nltk
 from spacy.cli import download  # Correct import
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from celery.result import AsyncResult
+from celery import shared_task
+from celery_app import celery_app  # Import the initialized Celery instance
+from tasks import analyze_text_async  # Import the task
+
 
 # Configure logging to file and console
 logging.basicConfig(
@@ -129,12 +134,14 @@ def unify_analysis(analyses):
         app.logger.error(f"Error in GPT-3 unification request: {str(e)}")
         return "Error in unifying the analysis."
 
+@celery_app.task  # This makes it a Celery task
 def analyze_large_text_batched(text, topics, token_limit=3000):
     """Incrementally analyze text in 50-sentence batches."""
     all_analyses = []  # Store the analyses
     buffer = []  # Accumulate relevant sentences for summarization
     token_count = 0  # Track the token usage of the buffer
-    logger.info("starting analysis of entire web-page")
+    logger.info("Starting analysis of entire web-page")
+
     def estimate_token_count(text):
         """Estimate the token count for a chunk."""
         return len(text.split())
@@ -142,64 +149,54 @@ def analyze_large_text_batched(text, topics, token_limit=3000):
     def process_chunk():
         """Analyze the buffer and reset it."""
         nonlocal buffer, token_count
-        # Analyze the current buffer
-        logger.info("sending buffer to chat-gpt")
+        logger.info("Sending buffer to ChatGPT")
         analysis = analyze_chunk(' '.join(buffer))
         all_analyses.append(analysis)
-        # Reset the buffer and token count
-        buffer = []
-        token_count = 0
+        buffer = []  # Reset buffer
+        token_count = 0  # Reset token count
 
-    # Process the web page in 50-sentence increments
     sentence_start = 0
-    sentences = text.split('. ')  # Split the full text initially
-    logger.info("sucesfully split full text")
+    sentences = text.split('. ')
     chunkiterationcounter = 0
+
     while sentence_start < len(sentences):
-        # Get the next 50 sentences
-        chunkiterationcounter+=1
+        chunkiterationcounter += 1
         chunk = sentences[sentence_start:sentence_start + 50]
-        sentence_start += 50  # Move to the next chunk
-        logger.info(f"processing chunk {chunkiterationcounter} ending in {chunk[0:1]}")
-        # Collect relevant sentences from the chunk
+        sentence_start += 50
+        logger.info(f"Processing chunk {chunkiterationcounter} ending in {chunk[0:1]}")
+
         relevant_sentences = [
             sent for sent in chunk if is_valid_sentence(sent) and is_relevant_sentence(sent, topics)
         ]
+
         if not relevant_sentences:
-            logger.info(f"chunk {chunkiterationcounter}: no relevant sentences found")
-            continue  # Skip if no relevant sentences are found
-        logger.info(f"chunk {chunkiterationcounter}: relevant sentences found")
-        # Add relevant sentences to the buffer
+            logger.info(f"Chunk {chunkiterationcounter}: No relevant sentences found")
+            continue
+
+        logger.info(f"Chunk {chunkiterationcounter}: Relevant sentences found")
         chunk_text = ' '.join(relevant_sentences)
-        logger.info("added relevent sentences to buffer")
         chunk_token_count = estimate_token_count(chunk_text)
-        logger.info(f"current chunk token value:{chunk_token_count}")
 
         if token_count + chunk_token_count > token_limit:
-            # Process the current buffer if adding this chunk would exceed the limit
-            logger.info("not enough room in buffer for next chunk, analyze current buffer")
+            logger.info("Analyzing current buffer")
             process_chunk()
 
-        # Add the chunk to the buffer and update token count
         buffer.extend(relevant_sentences)
         token_count += chunk_token_count
-        logger.info(f"current buffer token value:{token_count}")
 
-    # Analyze any remaining sentences in the buffer
     if buffer:
-        logger.info("clear out remaining buffer after done extracting sentences from web-page")
-        analysis = analyze_chunk(' '.join(buffer))
-        all_analyses.append(analysis)
-    chunkiterationcounter = 0
-    # Unify all analyses into a final result
+        logger.info("Analyzing remaining buffer")
+        process_chunk()
+
     if len(all_analyses) > 1:
-        logger.info("unifying multiple analyses.")
+        logger.info("Unifying multiple analyses")
         return unify_analysis(all_analyses)
     elif all_analyses:
         logger.info("Only one analysis result found. Skipping unification.")
         return all_analyses[0]
     else:
         return {"message": "No relevant information found."}
+
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -214,15 +211,36 @@ async def websocket_endpoint(websocket: WebSocket):
             if message.get('type') == 'ping':
                 logger.info("Received keepalive ping")
                 await websocket.send_text(json.dumps({'message': 'pong'}))
+
             elif message.get('action') == 'analyze_text' and 'text' in message:
                 logger.info("Received text for analysis")
-                result = analyze_large_text_batched(message['text'], HARDCODED_TOPICS)
-                await websocket.send_text(json.dumps({'result': result}))
+
+                # Call Celery task asynchronously
+                task = analyze_text_async.delay(message['text'], HARDCODED_TOPICS)
+
+                # Wait for the task result
+                result = task.get(timeout=600)  # Blocks until result is available
+
+                # Send the result back through WebSocket
+                response = json.dumps({'result': result})
+                await websocket.send_text(response)
+                logger.info(f"Sent analysis result: {response}")
             else:
                 await websocket.send_text(json.dumps({'error': 'Invalid request'}))
 
     except WebSocketDisconnect:
         logger.info("WebSocket connection closed.")
+
+@app.get("/task-result/{task_id}")
+async def get_task_result(task_id: str):
+    """Endpoint to fetch the task result using its ID."""
+    task_result = AsyncResult(task_id)
+    if task_result.state == 'PENDING':
+        return {"status": "Processing"}
+    elif task_result.state == 'SUCCESS':
+        return {"status": "Completed", "result": task_result.result}
+    else:
+        return {"status": "Failed"}
 
 
 if __name__ == '__main__':
