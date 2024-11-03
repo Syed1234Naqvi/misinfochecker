@@ -1,55 +1,96 @@
 import os
 import time
 import json
-import redis
 from celery import Celery, Task
 from celery.exceptions import Retry
-from celery_app import celery_app  # Uses the existing Redis configuration
+from celery_app import celery_app 
 import logging
+import boto3
+from botocore.exceptions import ClientError
+import time
+
+# Initialize DynamoDB and reference the two tables
+dynamodb = boto3.resource('dynamodb', region_name='us-east-2')
+rate_limit_table = dynamodb.Table('RateLimits')
+results_table = dynamodb.Table('CeleryResults')  # New table for storing task results
 
 logger = logging.getLogger(__name__)
-
-
-# Redis connection
-r = redis.Redis(host='localhost', port=6379)
 
 @celery_app.task(name='tasks.analyze_text_async', bind=True, default_retry_delay=60, max_retries=None)
 def analyze_text_async(self, text, topics):
     """Analyze large text using ChatGPT with rate limiting."""
     tokens_used = len(text.split())
 
-    # Use Redis to check ChatGPT rate limits
     try:
-        check_limit(r, tokens_used)
+        check_limit(tokens_used, self.request.id)
     except Exception as e:
         raise self.retry(exc=e)  # Retry this task, using the configured delay
     
     from cseserver import analyze_large_text_batched  # Avoid circular import
     result = analyze_large_text_batched(text, topics)
 
+    # Store the result in DynamoDB with TTL to expire results automatically
+    results_table.put_item(
+        Item={
+            'task_id': self.request.id,
+            'result': result,
+            'processed_at': int(time.time()),
+            'ttl': int(time.time()) + 3600  # TTL set to 1 hour (3600 seconds)
+        }
+    )
+
     logger.info(f"Analysis completed: {result[:100] if isinstance(result, str) else result}")
     return result
 
-def check_limit(redis_client, tokens):
-    """Check ChatGPT API rate limits using Redis."""
+def check_limit(tokens, task_id):
+    """Check ChatGPT API rate limits using DynamoDB with deduplication."""
     max_rpm = 500  # ChatGPT requests per minute
     max_tpm = 200000  # ChatGPT tokens per minute
     current_minute = int(time.time() // 60)
-    
-    # Retrieve current RPM and TPM counts
-    current_rpm = int(redis_client.get(f"chatgpt_requests_minute:{current_minute}") or 0)
-    current_tpm = int(redis_client.get(f"chatgpt_tokens_minute:{current_minute}") or 0)
 
-    # Request per minute tracking
-    if redis_client.incr(f"chatgpt_requests_minute:{current_minute}") > max_rpm:
+    # Keys for rate limiting
+    current_rpm_key = f"chatgpt_requests_minute:{current_minute}"
+    current_tpm_key = f"chatgpt_tokens_minute:{current_minute}"
+
+    # Deduplication: Check if this task_id has already been processed in CeleryResults
+    try:
+        response = results_table.get_item(Key={'task_id': task_id})
+        if 'Item' in response:
+            logger.info(f"Duplicate task detected: {task_id}. Skipping.")
+            return
+    except ClientError as e:
+        logger.info(e.response['Error']['Message'])
+
+    # Proceed to increment counters in DynamoDB for rate limits
+    # Increment RPM
+    response = rate_limit_table.update_item(
+        Key={'limit_key': current_rpm_key},
+        UpdateExpression="SET #counter = if_not_exists(#counter, :start) + :inc",
+        ExpressionAttributeNames={'#counter': 'counter'},
+        ExpressionAttributeValues={':inc': 1, ':start': 0},
+        ReturnValues="UPDATED_NEW"
+    )
+    # Check RPM
+    if response['Attributes']['counter'] > max_rpm:
         raise Exception("ChatGPT request limit reached.")
-    redis_client.expire(f"chatgpt_requests_minute:{current_minute}", 60)
-    logger.info(f"Current RPM: {current_rpm}/{max_rpm}")
 
-    # Token per minute tracking
-    if redis_client.incrby(f"chatgpt_tokens_minute:{current_minute}", tokens) > max_tpm:
+    # Increment TPM
+    response = rate_limit_table.update_item(
+        Key={'limit_key': current_tpm_key},
+        UpdateExpression="SET #counter = if_not_exists(#counter, :start) + :tokens",
+        ExpressionAttributeNames={'#counter': 'counter'},
+        ExpressionAttributeValues={':tokens': tokens, ':start': 0},
+        ReturnValues="UPDATED_NEW"
+    )
+    # Check TPM
+    if response['Attributes']['counter'] > max_tpm:
         raise Exception("ChatGPT token limit reached.")
-    redis_client.expire(f"chatgpt_tokens_minute:{current_minute}", 60)
 
-    logger.info(f"Current TPM: {current_tpm}/{max_tpm}")
-
+    # Log the processed task in CeleryResults with TTL
+    results_table.put_item(
+        Item={
+            'task_id': task_id,
+            'processed_at': int(time.time()),
+            'ttl': int(time.time()) + 3600  # TTL set to 1 hour (3600 seconds)
+        }
+    )
