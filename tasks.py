@@ -85,12 +85,3 @@ def check_limit(tokens, task_id):
     # Check TPM
     if response['Attributes']['counter'] > max_tpm:
         raise Exception("ChatGPT token limit reached.")
-
-    # Log the processed task in CeleryResults with TTL
-    results_table.put_item(
-        Item={
-            'task_id': task_id,
-            'processed_at': int(time.time()),
-            'ttl': int(time.time()) + 3600  # TTL set to 1 hour (3600 seconds)
-        }
-    )
