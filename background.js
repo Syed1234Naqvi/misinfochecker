@@ -48,7 +48,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const requestInfo = new Date().getTime().toString(); // Example using timestamp // This line was modified or newly added
         requestMap.set(requestInfo, sender.tab.id);  // Track the tab making the request // This line was modified or newly added
         console.log(`Stored request for tab ID: ${sender.tab.id}`);
-	    webSocket.send(JSON.stringify({ action: 'analyze_text', text: message.text, requestInfo: requestInfo })); // This line was modified or newly added
+	webSocket.send(JSON.stringify({ action: 'analyze_text', text: message.text, requestInfo: requestInfo })); // This line was modified or newly added
         console.log('Text sent through WebSocket.');
     }
 	return true;
