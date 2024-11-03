@@ -3,7 +3,6 @@ import os
 from celery import Celery
 from celery import shared_task
 
-
 # Create a Celery instance using Redis as the broker and result backend
 celery_app = Celery(
     'cseserver',
@@ -20,8 +19,6 @@ celery_app .conf.update(
     enable_utc=True
 )
 
-def register_tasks():
-    from tasks import analyze_text_async  # Import here to avoid circular import
-    celery_app.tasks.register(analyze_text_async)
 
-register_tasks()
+celery_app.autodiscover_tasks(['tasks'])
+
