@@ -1,0 +1,10 @@
+celery
+pycurl
+redis
+boto3
+fastapi
+uvicorn
+websockets
+openai
+spacy
+nltk

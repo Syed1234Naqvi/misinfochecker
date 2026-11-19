@@ -3,16 +3,21 @@ import time
 import json
 from celery import Celery, Task
 from celery.exceptions import Retry
-from celery_app import celery_app 
+from celery_app import celery_app
 import logging
 import boto3
 from botocore.exceptions import ClientError
 import time
 
 # Initialize DynamoDB and reference the two tables
-dynamodb = boto3.resource('dynamodb', region_name='us-east-2')
-rate_limit_table = dynamodb.Table('RateLimits')
-results_table = dynamodb.Table('CeleryResults')  # New table for storing task results
+dynamodb = boto3.resource(
+    "dynamodb",
+    region_name=os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
+    endpoint_url=os.getenv("AWS_ENDPOINT_URL", "https://127.0.0.1:9297"),
+    verify=os.getenv("AWS_SSL_VERIFY", "true").lower() not in {"0", "false", "no"},
+)
+rate_limit_table = dynamodb.Table("RateLimits")
+results_table = dynamodb.Table("CeleryResults")
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +30,7 @@ def analyze_text_async(self, text, topics):
         check_limit(tokens_used, self.request.id)
     except Exception as e:
         raise self.retry(exc=e)  # Retry this task, using the configured delay
-    
+
     from cseserver import analyze_large_text_batched  # Avoid circular import
     result = analyze_large_text_batched(text, topics)
 

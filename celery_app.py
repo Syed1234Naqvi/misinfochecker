@@ -1,54 +1,71 @@
-# celery_app.py
 import os
 from celery import Celery
-from celery import shared_task
 import boto3
 
-os.environ["AWS_DEFAULT_REGION"] = "us-east-2"
+AWS_REGION = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+AWS_ENDPOINT_URL = os.getenv("AWS_ENDPOINT_URL", "https://127.0.0.1:9297")
+AWS_SSL_VERIFY = os.getenv("AWS_SSL_VERIFY", "true").lower() not in {
+    "0",
+    "false",
+    "no",
+}
+AWS_QUEUE_URL = os.getenv(
+    "AWS_SQS_QUEUE_URL",
+    f"{AWS_ENDPOINT_URL}/000000000000/analyze-queue",
+)
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "sqs://")
+CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "dynamodb://")
 
-dynamodb_client = boto3.resource('dynamodb', region_name='us-east-2')
+dynamodb_client = boto3.resource(
+    "dynamodb",
+    region_name=AWS_REGION,
+    endpoint_url=AWS_ENDPOINT_URL,
+    verify=AWS_SSL_VERIFY,
+)
 
 
-# Create a Celery instance
 celery_app = Celery(
-    'cseserver',
-    broker='sqs://',
-    backend='dynamodb://'
+    "cseserver",
+    broker=CELERY_BROKER_URL,
+    backend=CELERY_RESULT_BACKEND,
 )
 
-# Celery configuration
-# Celery configuration
-celery_app.conf.update(
-    result_backend='dynamodb',
-    result_backend_settings={
-        'table_name': 'CeleryResults',  # Make sure this matches the actual DynamoDB table name
-        'region_name': 'us-east-2',
-        'aws_access_key_id': 'AKIA6JQ442QOEP3H74TM',
-        'aws_secret_access_key': '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',
-    },
-    task_serializer='json',
-    accept_content=['json'],
-    result_serializer='json',
-    timezone='UTC',
-    enable_utc=True,
-    broker_transport_options={
-        'region': 'us-east-2',
-        'predefined_queues': {
-            'analyze-queue': {
-                'url': 'https://sqs.us-east-2.amazonaws.com/982534378524/analyze-queue',
+broker_transport_options = {}
+if CELERY_BROKER_URL.startswith("sqs://"):
+    broker_transport_options = {
+        "region": AWS_REGION,
+        "endpoint_url": AWS_ENDPOINT_URL,
+        "predefined_queues": {
+            "analyze-queue": {
+                "url": AWS_QUEUE_URL,
             },
-            # Add this queue to avoid the UndefinedQueueException
-            'celery': {
-                'url': 'https://sqs.us-east-2.amazonaws.com/982534378524/analyze-queue',
-            }
+            "celery": {
+                "url": AWS_QUEUE_URL,
+            },
         },
-        'visibility_timeout': 6000,  # Timeout in seconds (adjust as needed)
-        'aws_access_key_id': 'AKIA6JQ442QOEP3H74TM',         # Embed your AWS access key here
-        'aws_secret_access_key': 'Gn1n9iPTrSODIcX0zSmmaUZUCzOYpGLfy0Od9izm'  # Embed your AWS secret key here
-
+        "visibility_timeout": 6000,
     }
+
+result_backend_settings = {}
+if CELERY_RESULT_BACKEND.startswith("dynamodb://"):
+    result_backend_settings = {
+        "table_name": "CeleryResults",
+        "region_name": AWS_REGION,
+        "endpoint_url": AWS_ENDPOINT_URL,
+        "verify": AWS_SSL_VERIFY,
+    }
+
+celery_app.conf.update(
+    result_backend=CELERY_RESULT_BACKEND,
+    result_backend_settings=result_backend_settings,
+    task_serializer="json",
+    accept_content=["json"],
+    result_serializer="json",
+    timezone="UTC",
+    enable_utc=True,
+    broker_transport_options=broker_transport_options,
 )
 
-celery_app.autodiscover_tasks(['tasks'])
+celery_app.autodiscover_tasks(["tasks"])
 
-results_table = dynamodb_client.Table('CeleryResults')  # Reference to CeleryResults table for manual result handling
+results_table = dynamodb_client.Table("CeleryResults")

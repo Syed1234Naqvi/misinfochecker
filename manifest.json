@@ -7,7 +7,7 @@
     "activeTab",
     "scripting",
     "storage",
-    "declarativeNetRequest"  // Use this instead of webRequestBlocking
+    "declarativeNetRequest"
   ],
   "background": {
     "service_worker": "background.js"

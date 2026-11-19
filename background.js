@@ -3,7 +3,7 @@ let keepAliveIntervalId = null; // Keep track of keep-alive interval
 const requestMap = new Map();  // Store requests by tab ID
 
 function connectWebSocket() {
-    webSocket = new WebSocket('wss://misinfochecker.com/ws'); // WebSocket connection
+    webSocket = new WebSocket('ws://localhost:5000/ws'); // WebSocket connection
 
     webSocket.onopen = () => {
         console.log('WebSocket connection opened.');

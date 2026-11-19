@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)  # Create a logger instance
 
 
 client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -101,7 +102,7 @@ def analyze_chunk(chunk):
     ]
     try:
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model=OPENAI_MODEL,
             messages=messages,
             max_tokens=1000,
             temperature=0.2
@@ -122,7 +123,7 @@ def unify_analysis(analyses):
     ]
     try:
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model=OPENAI_MODEL,
             messages=messages,
             max_tokens=1000,
             temperature=0.2
